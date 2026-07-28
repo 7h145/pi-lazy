@@ -122,4 +122,4 @@ provides the runtime `pi-ai` and `pi-coding-agent` packages.
 - The bounded, ephemeral interaction was inspired by
   [`@narumitw/pi-btw`](https://www.npmjs.com/package/@narumitw/pi-btw), but
   pi-lazy does not depend on or import its implementation.
-- pi-lazy is licensed under CC BY 4.0. See [`LICENSE`](./LICENSE).
+- pi-lazy is licensed under MIT. See [`LICENSE`](./LICENSE).

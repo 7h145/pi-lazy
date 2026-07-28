@@ -11,7 +11,7 @@
  * depending on its private implementation.
  *
  * Author: thias <github.attic@typedef.net>, OpenAI Codex (5.6)
- * License: CC BY 4.0
+ * License: MIT
  * Version: 0.1
  * Date: 2026-07-27
  * Last verified with Pi: 0.80.6

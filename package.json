@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Context-aware cleanup of rough drafts before submitting them to Pi.",
   "type": "module",
-  "license": "CC-BY-4.0",
+  "license": "MIT",
   "keywords": [
     "pi-package",
     "pi",

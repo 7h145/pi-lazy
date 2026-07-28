@@ -185,7 +185,7 @@ When changing or releasing this extension in `7h145/pi-assorted`:
 
 1. Preserve the entry-point Purpose, Strategy, Author, License, Version, Date,
    and Last-verified header.
-2. Preserve CC BY 4.0 attribution and the pi-btw inspiration note.
+2. Preserve MIT licensing, source attribution, and the pi-btw inspiration note.
 3. Keep the root `pi.extensions` manifest and included-extension table current.
 4. Keep runtime imports represented as optional peer dependencies; do not add a
    second Pi installation to production dependencies.
