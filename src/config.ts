@@ -1,5 +1,7 @@
 import { readFile } from "node:fs/promises";
 
+export const CURRENT_MODEL_REFERENCE = "$current";
+
 export const THINKING_LEVELS = [
   "off",
   "minimal",
@@ -13,16 +15,15 @@ export const THINKING_LEVELS = [
 export type LazyThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 export interface LazySettings {
-  model?: string;
+  modelChain: string[];
   thinkingLevel: LazyThinkingLevel;
   maxContextChars: number;
-  fallbackToCurrentModel: boolean;
 }
 
 export const DEFAULT_SETTINGS: Readonly<LazySettings> = {
+  modelChain: [CURRENT_MODEL_REFERENCE],
   thinkingLevel: "off",
   maxContextChars: 8_000,
-  fallbackToCurrentModel: false,
 };
 
 export const MAX_CONTEXT_CHARS = 100_000;
@@ -31,12 +32,7 @@ export type SettingsLoadResult =
   | { ok: true; settings: LazySettings }
   | { ok: false; error: string };
 
-const SETTINGS_KEYS = new Set([
-  "model",
-  "thinkingLevel",
-  "maxContextChars",
-  "fallbackToCurrentModel",
-]);
+const SETTINGS_KEYS = new Set(["modelChain", "thinkingLevel", "maxContextChars"]);
 
 export function parseModelReference(
   reference: string,
@@ -63,13 +59,38 @@ export function parseSettings(value: unknown): SettingsLoadResult {
     };
   }
 
-  const settings: LazySettings = { ...DEFAULT_SETTINGS };
+  const settings: LazySettings = {
+    ...DEFAULT_SETTINGS,
+    modelChain: [...DEFAULT_SETTINGS.modelChain],
+  };
 
-  if (Object.hasOwn(value, "model")) {
-    if (typeof value.model !== "string" || !parseModelReference(value.model)) {
-      return { ok: false, error: '"model" must use non-whitespace "provider/model-id" form' };
+  if (Object.hasOwn(value, "modelChain")) {
+    if (!Array.isArray(value.modelChain) || value.modelChain.length === 0) {
+      return { ok: false, error: '"modelChain" must be a nonempty array' };
     }
-    settings.model = value.model;
+
+    const modelChain: string[] = [];
+    const seen = new Set<string>();
+    for (const candidate of value.modelChain) {
+      if (
+        typeof candidate !== "string" ||
+        (candidate !== CURRENT_MODEL_REFERENCE && !parseModelReference(candidate))
+      ) {
+        return {
+          ok: false,
+          error: `each "modelChain" entry must be ${JSON.stringify(CURRENT_MODEL_REFERENCE)} or use non-whitespace "provider/model-id" form`,
+        };
+      }
+      if (seen.has(candidate)) {
+        return {
+          ok: false,
+          error: `"modelChain" contains duplicate entry ${JSON.stringify(candidate)}`,
+        };
+      }
+      seen.add(candidate);
+      modelChain.push(candidate);
+    }
+    settings.modelChain = modelChain;
   }
 
   if (Object.hasOwn(value, "thinkingLevel")) {
@@ -97,13 +118,6 @@ export function parseSettings(value: unknown): SettingsLoadResult {
     settings.maxContextChars = value.maxContextChars;
   }
 
-  if (Object.hasOwn(value, "fallbackToCurrentModel")) {
-    if (typeof value.fallbackToCurrentModel !== "boolean") {
-      return { ok: false, error: '"fallbackToCurrentModel" must be a boolean' };
-    }
-    settings.fallbackToCurrentModel = value.fallbackToCurrentModel;
-  }
-
   return { ok: true, settings };
 }
 
@@ -113,7 +127,10 @@ export async function loadSettings(path: string): Promise<SettingsLoadResult> {
     text = await readFile(path, "utf8");
   } catch (error: unknown) {
     if (isNodeError(error) && error.code === "ENOENT") {
-      return { ok: true, settings: { ...DEFAULT_SETTINGS } };
+      return {
+        ok: true,
+        settings: { ...DEFAULT_SETTINGS, modelChain: [...DEFAULT_SETTINGS.modelChain] },
+      };
     }
     return { ok: false, error: `${path}: ${formatError(error)}` };
   }

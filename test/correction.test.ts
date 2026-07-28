@@ -1,16 +1,18 @@
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
-import type { LazySettings } from "../src/config.js";
 import {
   extractAssistantText,
-  resolveCorrectionModel,
+  modelChainFingerprint,
+  resolveModelCandidate,
   runCorrection,
+  runCorrectionChain,
   type CompletionFunction,
   type ModelRegistryLike,
 } from "../src/correction.js";
 
 const currentModel = model("main", "large");
 const smallModel = model("small", "fast");
+const lunaModel = model("openai", "luna");
 
 function model(provider: string, id: string): Model<Api> {
   return {
@@ -27,21 +29,12 @@ function model(provider: string, id: string): Model<Api> {
   };
 }
 
-function settings(overrides: Partial<LazySettings> = {}): LazySettings {
-  return {
-    thinkingLevel: "off",
-    maxContextChars: 8_000,
-    fallbackToCurrentModel: false,
-    ...overrides,
-  };
-}
-
 function registry(options: {
   models?: Model<Api>[];
   unavailable?: Model<Api>[];
   throws?: Model<Api>[];
 } = {}): ModelRegistryLike {
-  const models = options.models ?? [currentModel, smallModel];
+  const models = options.models ?? [currentModel, smallModel, lunaModel];
   return {
     find: (provider, id) => models.find((candidate) => candidate.provider === provider && candidate.id === id),
     getApiKeyAndHeaders: async (candidate) => {
@@ -75,76 +68,175 @@ function response(
   };
 }
 
-describe("resolveCorrectionModel", () => {
-  it("uses the current model when none is configured", async () => {
-    await expect(resolveCorrectionModel(settings(), currentModel, registry())).resolves.toMatchObject({
+function chainRequest(overrides: Partial<Parameters<typeof runCorrectionChain>[0]> = {}) {
+  return {
+    modelChain: ["small/fast", "openai/luna", "$current"],
+    startIndex: 0,
+    currentModel,
+    registry: registry(),
+    draft: "rough",
+    conversationContext: "context",
+    thinkingLevel: "off" as const,
+    ...overrides,
+  };
+}
+
+describe("resolveModelCandidate", () => {
+  it("resolves explicit and current models", async () => {
+    await expect(resolveModelCandidate("small/fast", currentModel, registry())).resolves.toMatchObject({
+      ok: true,
+      model: smallModel,
+      auth: { apiKey: "key-fast" },
+    });
+    await expect(resolveModelCandidate("$current", currentModel, registry())).resolves.toMatchObject({
       ok: true,
       model: currentModel,
       auth: { apiKey: "key-large" },
     });
   });
 
-  it("uses an independent configured model", async () => {
-    await expect(
-      resolveCorrectionModel(settings({ model: "small/fast" }), currentModel, registry()),
-    ).resolves.toMatchObject({ ok: true, model: smallModel, auth: { apiKey: "key-fast" } });
-  });
-
-  it("fails closed when a configured model is missing", async () => {
-    await expect(
-      resolveCorrectionModel(settings({ model: "missing/model" }), currentModel, registry()),
-    ).resolves.toEqual({
+  it("reports unknown, unauthenticated, and missing current models", async () => {
+    await expect(resolveModelCandidate("missing/model", currentModel, registry())).resolves.toEqual({
       ok: false,
-      error: "Configured correction model missing/model was not found",
+      error: "model was not found",
+    });
+    await expect(
+      resolveModelCandidate("small/fast", currentModel, registry({ unavailable: [smallModel] })),
+    ).resolves.toEqual({ ok: false, error: "not logged in" });
+    await expect(resolveModelCandidate("$current", undefined, registry())).resolves.toEqual({
+      ok: false,
+      error: "no current session model is selected",
     });
   });
 
-  it("warns and falls back only when enabled", async () => {
-    const result = await resolveCorrectionModel(
-      settings({ model: "missing/model", fallbackToCurrentModel: true }),
-      currentModel,
-      registry(),
+  it("turns credential resolver exceptions into errors", async () => {
+    await expect(
+      resolveModelCandidate("small/fast", currentModel, registry({ throws: [smallModel] })),
+    ).resolves.toEqual({ ok: false, error: "credential command failed" });
+  });
+});
+
+describe("runCorrectionChain", () => {
+  it("falls back after a runtime connection failure", async () => {
+    const completion = vi.fn<CompletionFunction>(async (selected) => {
+      if (selected === smallModel) throw new Error("Connection error.");
+      return response();
+    });
+    const onFailure = vi.fn();
+
+    const result = await runCorrectionChain(chainRequest({ onFailure }), completion);
+
+    expect(result).toMatchObject({
+      kind: "corrected",
+      candidateIndex: 1,
+      modelLabel: "openai/luna",
+      failures: [{ modelLabel: "small/fast", message: "Connection error." }],
+    });
+    expect(completion).toHaveBeenCalledTimes(2);
+    expect(onFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ modelLabel: "small/fast", message: "Connection error." }),
+      "openai/luna",
     );
-    expect(result).toMatchObject({ ok: true, model: currentModel });
-    if (result.ok) expect(result.warning).toContain("using current model main/large");
   });
 
-  it("reports configured and fallback failures together", async () => {
-    const result = await resolveCorrectionModel(
-      settings({ model: "small/fast", fallbackToCurrentModel: true }),
-      currentModel,
-      registry({ unavailable: [smallModel, currentModel] }),
+  it("falls back after resolution and authentication failures", async () => {
+    const result = await runCorrectionChain(
+      chainRequest({
+        modelChain: ["missing/model", "small/fast", "$current"],
+        registry: registry({ unavailable: [smallModel] }),
+      }),
+      async () => response(),
     );
-    expect(result).toMatchObject({ ok: false });
-    if (!result.ok) {
-      expect(result.error).toContain("small/fast is unavailable");
-      expect(result.error).toContain("fallback failed");
+
+    expect(result).toMatchObject({
+      kind: "corrected",
+      candidateIndex: 2,
+      modelLabel: "main/large",
+      failures: [
+        { modelLabel: "missing/model", message: "model was not found" },
+        { modelLabel: "small/fast", message: "not logged in" },
+      ],
+    });
+  });
+
+  it("falls back after incomplete and empty responses", async () => {
+    const completion = vi.fn<CompletionFunction>(async (selected) => {
+      if (selected === smallModel) return response("length");
+      if (selected === lunaModel) return response("stop", []);
+      return response();
+    });
+    const result = await runCorrectionChain(chainRequest(), completion);
+    expect(result).toMatchObject({ kind: "corrected", candidateIndex: 2 });
+    expect(completion).toHaveBeenCalledTimes(3);
+  });
+
+  it("does not fall back after cancellation", async () => {
+    const completion = vi.fn<CompletionFunction>(async () => response("aborted"));
+    const result = await runCorrectionChain(chainRequest(), completion);
+    expect(result).toEqual({ kind: "cancelled" });
+    expect(completion).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts at the remembered candidate index", async () => {
+    const completion = vi.fn<CompletionFunction>(async () => response());
+    const result = await runCorrectionChain(chainRequest({ startIndex: 1 }), completion);
+    expect(result).toMatchObject({ kind: "corrected", candidateIndex: 1 });
+    expect(completion).toHaveBeenCalledTimes(1);
+    expect(completion.mock.calls[0]?.[0]).toBe(lunaModel);
+  });
+
+  it("does not retry an explicit model through $current", async () => {
+    const completion = vi.fn<CompletionFunction>(async (selected) => {
+      if (selected === currentModel) throw new Error("offline");
+      return response();
+    });
+    const result = await runCorrectionChain(
+      chainRequest({ modelChain: ["main/large", "$current", "openai/luna"] }),
+      completion,
+    );
+    expect(result).toMatchObject({
+      kind: "corrected",
+      candidateIndex: 2,
+      failures: [
+        { modelLabel: "main/large", message: "offline" },
+        { message: "duplicates an earlier model in the chain" },
+      ],
+    });
+    expect(completion).toHaveBeenCalledTimes(2);
+  });
+
+  it("combines failures when the chain is exhausted", async () => {
+    const result = await runCorrectionChain(
+      chainRequest({ modelChain: ["small/fast", "openai/luna"] }),
+      async () => {
+        throw new Error("offline");
+      },
+    );
+    expect(result).toMatchObject({ kind: "exhausted" });
+    if (result.kind === "exhausted") {
+      expect(result.message).toContain("small/fast: offline");
+      expect(result.message).toContain("openai/luna: offline");
     }
   });
 
-  it("does not retry the same unavailable model as its own fallback", async () => {
-    const getApiKeyAndHeaders = vi.fn(async () => ({ ok: false as const, error: "unavailable" }));
-    const customRegistry: ModelRegistryLike = {
-      find: () => currentModel,
-      getApiKeyAndHeaders,
-    };
-    const result = await resolveCorrectionModel(
-      settings({ model: "main/large", fallbackToCurrentModel: true }),
-      currentModel,
-      customRegistry,
-    );
-    expect(result).toMatchObject({ ok: false });
-    expect(getApiKeyAndHeaders).toHaveBeenCalledTimes(1);
+  it("returns a fast exhausted result when no candidate remains", async () => {
+    await expect(
+      runCorrectionChain(chainRequest({ startIndex: 3 }), async () => response()),
+    ).resolves.toEqual({
+      kind: "exhausted",
+      message: "No usable correction model remains. Run /reload to retry the model chain.",
+      failures: [],
+    });
   });
+});
 
-  it("turns credential resolver exceptions into errors", async () => {
-    const result = await resolveCorrectionModel(
-      settings({ model: "small/fast" }),
-      currentModel,
-      registry({ throws: [smallModel] }),
+describe("modelChainFingerprint", () => {
+  it("changes with chain configuration and the current model when referenced", () => {
+    const first = modelChainFingerprint(["small/fast", "$current"], currentModel);
+    expect(modelChainFingerprint(["small/fast", "$current"], lunaModel)).not.toBe(first);
+    expect(modelChainFingerprint(["small/fast"], currentModel)).toBe(
+      modelChainFingerprint(["small/fast"], lunaModel),
     );
-    expect(result).toMatchObject({ ok: false });
-    if (!result.ok) expect(result.error).toContain("credential command failed");
   });
 });
 

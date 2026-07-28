@@ -8,7 +8,7 @@ and awkward wording. Correction runs as a separate model request and returns
 the result to Pi's editor for review. It does not add a main-conversation turn,
 call tools, answer the draft, or submit anything automatically.
 
-Requires Pi 0.80.4 or newer. Last verified with Pi 0.80.6.
+Requires Pi 0.80.4 or newer. Last verified with Pi 0.82.1.
 
 ## Command
 
@@ -38,28 +38,47 @@ The normal location is `~/.pi/agent/pi-lazy.json`.
 
 ```json
 {
-  "model": "provider/model-id",
+  "modelChain": [
+    "openai.lcl.example/chat-flash",
+    "openai-codex/gpt-5.6-luna",
+    "$current"
+  ],
   "thinkingLevel": "off",
-  "maxContextChars": 8000,
-  "fallbackToCurrentModel": false
+  "maxContextChars": 8000
 }
 ```
 
-All fields are optional:
+All fields are optional. Version 0.2 replaces the earlier `model` and
+`fallbackToCurrentModel` fields with `modelChain`; the removed fields are
+rejected by strict configuration validation.
 
-- `model` selects a correction model in `provider/model-id` form. Model IDs may
-  contain additional `/` characters. Without this field, pi-lazy uses the
-  current session model without changing it.
+- `modelChain` is a nonempty ordered list. Each entry is a
+  `provider/model-id` reference or `"$current"`, meaning the current Pi session
+  model. The first entry is preferred and later entries are fallbacks. It
+  defaults to `["$current"]`; omit `"$current"` to prevent fallback to the main
+  model. Model IDs may contain additional `/` characters.
 - `thinkingLevel` accepts `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
   `max`. It defaults to `off`, independently of the main session.
 - `maxContextChars` sets the recent conversation-context budget from `0` through
   `100000`. It defaults to `8000`; `0` disables conversation context.
-- `fallbackToCurrentModel` allows an unavailable configured model to fall back
-  to the current session model after a visible warning. It defaults to `false`,
-  preventing an unexpectedly expensive fallback from happening silently.
 
-The selected model must exist in Pi's model registry and have usable credentials
-through Pi. Unknown fields and invalid values are rejected.
+Each candidate is resolved lazily and must exist in Pi's model registry with
+usable credentials. Use `pi --list-models` to list available model strings, or
+`pi --list-models <search>` to narrow the results (for example,
+`pi --list-models openai-codex`). Copy the displayed `provider/model` pair into
+`modelChain`. Pi's `/model` command or Ctrl+L provides the same discovery flow
+interactively.
+
+On any non-cancellation failure, pi-lazy warns and tries the next candidate with
+the same draft and context snapshot. Cancellation stops the chain immediately.
+
+After a fallback succeeds, pi-lazy remembers that candidate and skips earlier
+failed models for the rest of the current extension runtime. This avoids paying
+repeated connection-timeout costs. `/reload`, session replacement, a changed
+model chain, or a changed session model referenced by `"$current"` resets the
+remembered position. If every candidate fails, later calls fail immediately
+until reset. Unknown fields, duplicate candidates, and invalid values are
+rejected.
 
 ## Context and privacy
 
@@ -69,9 +88,9 @@ summaries. It excludes images, thinking, tool calls, tool results, shell output,
 and extension state. Newest complete messages are preferred when the budget is
 reached.
 
-A configured correction model can use a provider different from the main
-session provider. The rough draft and bounded conversation context are sent to
-that provider. Configure only a provider appropriate for that content.
+Model-chain candidates can use providers different from the main session
+provider. Every attempted provider receives the rough draft and bounded
+conversation context. Configure only providers appropriate for that content.
 
 The correction prompt asks the model to make minimal edits while preserving
 intent, facts, uncertainty, language, tone, named entities, terminology,

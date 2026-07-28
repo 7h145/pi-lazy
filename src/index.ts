@@ -5,16 +5,17 @@
  * turn or submitting anything automatically.
  *
  * Strategy: build a small compaction-aware snapshot from the active branch,
- * use the current or independently configured model with reasoning off by
- * default, and treat editor replacement as a compare-and-set operation.
- * Inspired by the bounded, ephemeral interaction in @narumitw/pi-btw, without
- * depending on its private implementation.
+ * try an ordered model chain with reasoning off by default, remember the first
+ * working candidate for the current extension runtime, and treat editor
+ * replacement as a compare-and-set operation. Inspired by the bounded,
+ * ephemeral interaction in @narumitw/pi-btw, without depending on its private
+ * implementation.
  *
  * Author: thias <github.attic@typedef.net>, OpenAI Codex (5.6)
  * License: MIT
- * Version: 0.1
- * Date: 2026-07-27
- * Last verified with Pi: 0.80.6
+ * Version: 0.2
+ * Date: 2026-07-28
+ * Last verified with Pi: 0.82.1
  */
 
 import {
@@ -23,16 +24,20 @@ import {
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { join } from "node:path";
-import { loadSettings } from "./config.js";
+import { CURRENT_MODEL_REFERENCE, loadSettings } from "./config.js";
 import { buildConversationContext } from "./context.js";
 import {
-  resolveCorrectionModel,
-  runCorrection,
-  type CorrectionResult,
+  modelChainFingerprint,
+  runCorrectionChain,
+  type CorrectionChainResult,
 } from "./correction.js";
 
 const COMMAND = "lazy";
 const SETTINGS_FILE = "pi-lazy.json";
+
+type UiCorrectionResult =
+  | CorrectionChainResult
+  | { kind: "internalError"; message: string };
 
 interface EditorUi {
   getEditorText(): string;
@@ -40,6 +45,9 @@ interface EditorUi {
 }
 
 export default function piLazy(pi: ExtensionAPI): void {
+  let activeChainFingerprint: string | undefined;
+  let minimumCandidateIndex = 0;
+
   pi.registerCommand(COMMAND, {
     description: "Context-correct a rough draft and return it to the editor",
     handler: async (args, ctx) => {
@@ -77,60 +85,89 @@ export default function piLazy(pi: ExtensionAPI): void {
         return;
       }
 
-      const resolution = await resolveCorrectionModel(
-        settingsResult.settings,
-        ctx.model,
-        ctx.modelRegistry,
-      );
-      if (!resolution.ok) {
+      const settings = settingsResult.settings;
+      const fingerprint = modelChainFingerprint(settings.modelChain, ctx.model);
+      if (fingerprint !== activeChainFingerprint) {
+        activeChainFingerprint = fingerprint;
+        minimumCandidateIndex = 0;
+      }
+
+      if (minimumCandidateIndex >= settings.modelChain.length) {
         restoreAfterFailure(ctx.ui, expectedEditorText, draft);
-        ctx.ui.notify(`pi-lazy model error: ${resolution.error}`, "error");
+        ctx.ui.notify(
+          "No usable correction model remains. Run /reload to retry the model chain.",
+          "error",
+        );
         return;
       }
-      if (resolution.warning) ctx.ui.notify(resolution.warning, "warning");
 
       const contextEntries = ctx.sessionManager.buildContextEntries();
       const conversationContext = buildConversationContext(
         contextEntries,
-        settingsResult.settings.maxContextChars,
+        settings.maxContextChars,
       );
-      const modelLabel = `${resolution.model.provider}/${resolution.model.id}`;
-      const result = await ctx.ui.custom<CorrectionResult>((tui, theme, _keybindings, done) => {
-        const loader = new BorderedLoader(tui, theme, `Correcting draft with ${modelLabel}...`);
-        let settled = false;
+      const firstReference = settings.modelChain[minimumCandidateIndex];
+      const firstLabel = describeReference(firstReference, ctx.model);
+      const result = await ctx.ui.custom<UiCorrectionResult>(
+        (tui, theme, _keybindings, done) => {
+          const loader = new BorderedLoader(
+            tui,
+            theme,
+            `Correcting draft with ${firstLabel}...`,
+          );
+          let settled = false;
 
-        loader.onAbort = () => {
-          if (settled) return;
-          settled = true;
-          done({ kind: "cancelled" });
-        };
-
-        runCorrection({
-          draft,
-          conversationContext,
-          model: resolution.model,
-          auth: resolution.auth,
-          thinkingLevel: settingsResult.settings.thinkingLevel,
-          signal: loader.signal,
-        })
-          .then((correction) => {
+          loader.onAbort = () => {
             if (settled) return;
             settled = true;
-            done(correction);
+            done({ kind: "cancelled" });
+          };
+
+          runCorrectionChain({
+            modelChain: settings.modelChain,
+            startIndex: minimumCandidateIndex,
+            currentModel: ctx.model,
+            registry: ctx.modelRegistry,
+            draft,
+            conversationContext,
+            thinkingLevel: settings.thinkingLevel,
+            signal: loader.signal,
+            onFailure: (failure, nextModelLabel) => {
+              if (!nextModelLabel) return;
+              ctx.ui.notify(
+                `Correction with ${failure.modelLabel} failed: ${failure.message}; trying ${nextModelLabel}.`,
+                "warning",
+              );
+            },
           })
-          .catch((error: unknown) => {
-            if (settled) return;
-            settled = true;
-            done({
-              kind: "error",
-              message: error instanceof Error ? error.message : String(error),
+            .then((correction) => {
+              if (settled) return;
+              settled = true;
+              done(correction);
+            })
+            .catch((error: unknown) => {
+              if (settled) return;
+              settled = true;
+              done({
+                kind: "internalError",
+                message: error instanceof Error ? error.message : String(error),
+              });
             });
-          });
 
-        return loader;
-      });
+          return loader;
+        },
+      );
 
       if (result.kind === "corrected") {
+        const previousCandidateIndex = minimumCandidateIndex;
+        minimumCandidateIndex = result.candidateIndex;
+        if (result.candidateIndex > previousCandidateIndex) {
+          ctx.ui.notify(
+            `Using ${result.modelLabel} for /lazy until /reload or session replacement.`,
+            "warning",
+          );
+        }
+
         if (replaceEditorIfUnchanged(ctx.ui, expectedEditorText, result.text)) {
           ctx.ui.notify("Corrected draft loaded. Review and submit when ready.", "info");
         } else {
@@ -142,6 +179,7 @@ export default function piLazy(pi: ExtensionAPI): void {
         return;
       }
 
+      if (result.kind === "exhausted") minimumCandidateIndex = settings.modelChain.length;
       const restored = restoreAfterFailure(ctx.ui, expectedEditorText, draft);
       if (result.kind === "cancelled") {
         ctx.ui.notify(
@@ -172,4 +210,14 @@ export function replaceEditorIfUnchanged(
 
 function restoreAfterFailure(ui: EditorUi, expectedText: string, draft: string): boolean {
   return replaceEditorIfUnchanged(ui, expectedText, draft);
+}
+
+function describeReference(
+  reference: string | undefined,
+  currentModel: { provider: string; id: string } | undefined,
+): string {
+  if (reference !== CURRENT_MODEL_REFERENCE) return reference ?? "unknown model";
+  return currentModel
+    ? `${currentModel.provider}/${currentModel.id} ($current)`
+    : CURRENT_MODEL_REFERENCE;
 }

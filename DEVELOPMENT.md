@@ -88,28 +88,40 @@ possibility, not a behavioral guarantee.
 Context and draft are encoded as JSON strings with tag-significant characters
 escaped. They remain untrusted user content rather than system instructions.
 
-## Model policy
+## Model-chain policy
 
-Without configuration, pi-lazy snapshots and uses the current session model. It
-never calls `pi.setModel()` and does not alter the main session model.
+`modelChain` is an ordered, nonempty list of explicit `provider/model-id`
+references and the reserved `"$current"` entry. Without configuration, it
+defaults to `["$current"]`. pi-lazy snapshots the current model when invoked,
+never calls `pi.setModel()`, and does not alter the main session model.
 
-An independent correction model may be selected in
-`$PI_CODING_AGENT_DIR/pi-lazy.json`. It must exist in Pi's model registry and
-have credentials resolvable through Pi. The configured thinking level is
-independent of the main session and defaults to `off`.
+Candidates are resolved lazily. Missing models, credential failures, thrown
+connection errors, provider errors, truncated responses, tool-use stops, and
+empty output all advance to the next candidate. Cancellation stops immediately
+without advancing persistent health state. Every transition must show a warning
+because it may select a slower, more expensive, or externally hosted provider.
 
-An unavailable explicitly configured model fails closed by default. Optional
-fallback to the current model must be enabled explicitly and must show a visible
-warning. Never make fallback silent: it may unexpectedly select a slower, more
-expensive, or externally hosted provider.
+All attempts use the same immutable draft and context snapshot. The configured
+thinking level applies to every candidate, is independent of the main session,
+and defaults to `off`. Every attempted provider receives both the draft and
+bounded context; keep this privacy consequence prominent in the README.
 
-A different provider receives both the rough draft and bounded conversation
-context. Keep this privacy consequence prominent in the README.
+The first candidate that succeeds becomes the minimum candidate index for the
+current extension runtime. Earlier failed candidates are skipped on later
+commands, preventing repeated timeout costs. The index moves only forward. If a
+remembered candidate later fails and a later one succeeds, the later candidate
+becomes sticky. If all remaining candidates fail, later commands fail fast
+until reset.
+
+The health position resets when the extension reloads or its session runtime is
+replaced. It also resets when the configured chain changes, or when the current
+model changes while `"$current"` appears in the chain. Runtime deduplication
+prevents an explicit model reference and `"$current"` from invoking the same
+resolved model twice.
 
 The completion uses `completeSimple()` from the public pi-ai compatibility entry
 point and provides no tools. Only a response with stop reason `stop` and nonempty
-text is accepted. Aborts, provider errors, truncated responses, tool-use stops,
-and empty output are failures.
+text is accepted.
 
 ## Editor and TUI safety
 
@@ -163,14 +175,16 @@ npm run check
 ```
 
 The unit tests cover configuration, context extraction and budgeting, delimiter
-safety, minimal-edit prompt requirements, model selection and fallback,
-completion outcomes, command registration, busy rejection, and editor
-compare-and-set behavior.
+safety, minimal-edit prompt requirements, ordered model fallback, runtime
+failures, sticky candidate indexing, completion outcomes, command registration,
+busy rejection, and editor compare-and-set behavior.
 
-Initial manual verification with Pi 0.80.6 covers:
+Manual verification through Pi 0.82.1 covers:
 
 - successful correction with the current model;
 - correction through an independently configured model;
+- runtime fallback after a provider failure;
+- sticky reuse of the first successful fallback without retrying earlier models;
 - provider failure with original-draft restoration;
 - cancellation with original-draft restoration;
 - loading the package through `pi --no-extensions -e .`.

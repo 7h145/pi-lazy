@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  CURRENT_MODEL_REFERENCE,
   DEFAULT_SETTINGS,
   MAX_CONTEXT_CHARS,
   loadSettings,
@@ -31,25 +32,24 @@ describe("parseModelReference", () => {
 });
 
 describe("parseSettings", () => {
-  it("applies defaults", () => {
+  it("defaults to the current session model", () => {
     expect(parseSettings({})).toEqual({ ok: true, settings: DEFAULT_SETTINGS });
+    expect(DEFAULT_SETTINGS.modelChain).toEqual([CURRENT_MODEL_REFERENCE]);
   });
 
-  it("accepts all supported settings", () => {
+  it("accepts an ordered model chain", () => {
     expect(
       parseSettings({
-        model: "openrouter/anthropic/claude",
+        modelChain: ["local/chat-flash", "openai/gpt-luna", CURRENT_MODEL_REFERENCE],
         thinkingLevel: "minimal",
         maxContextChars: 12_000,
-        fallbackToCurrentModel: true,
       }),
     ).toEqual({
       ok: true,
       settings: {
-        model: "openrouter/anthropic/claude",
+        modelChain: ["local/chat-flash", "openai/gpt-luna", CURRENT_MODEL_REFERENCE],
         thinkingLevel: "minimal",
         maxContextChars: 12_000,
-        fallbackToCurrentModel: true,
       },
     });
   });
@@ -58,10 +58,30 @@ describe("parseSettings", () => {
     expect(parseSettings(value)).toMatchObject({ ok: false });
   });
 
-  it("rejects unknown keys", () => {
-    expect(parseSettings({ maxContextChar: 10 })).toEqual({
+  it("rejects unknown and removed settings", () => {
+    expect(parseSettings({ model: "local/model" })).toEqual({
       ok: false,
-      error: 'unknown setting "maxContextChar"',
+      error: 'unknown setting "model"',
+    });
+    expect(parseSettings({ fallbackToCurrentModel: true })).toMatchObject({ ok: false });
+  });
+
+  it.each([[], "local/model", null])("rejects invalid model chain %j", (modelChain) => {
+    expect(parseSettings({ modelChain })).toMatchObject({ ok: false });
+  });
+
+  it.each([
+    { modelChain: ["invalid"] },
+    { modelChain: ["local/model", 2] },
+    { modelChain: ["$unknown"] },
+  ])("rejects invalid model-chain entries $modelChain", ({ modelChain }) => {
+    expect(parseSettings({ modelChain })).toMatchObject({ ok: false });
+  });
+
+  it("rejects exact duplicate model-chain entries", () => {
+    expect(parseSettings({ modelChain: ["local/model", "local/model"] })).toEqual({
+      ok: false,
+      error: '"modelChain" contains duplicate entry "local/model"',
     });
   });
 
@@ -81,10 +101,6 @@ describe("parseSettings", () => {
       ok: true,
       settings: { maxContextChars },
     });
-  });
-
-  it("rejects non-boolean fallback", () => {
-    expect(parseSettings({ fallbackToCurrentModel: "yes" })).toMatchObject({ ok: false });
   });
 });
 
@@ -109,15 +125,15 @@ describe("loadSettings", () => {
   it("reads the file anew on every invocation", async () => {
     const directory = await makeTemporaryDirectory();
     const path = join(directory, "pi-lazy.json");
-    await writeFile(path, '{"maxContextChars":100}');
+    await writeFile(path, '{"modelChain":["first/model"]}');
     await expect(loadSettings(path)).resolves.toMatchObject({
       ok: true,
-      settings: { maxContextChars: 100 },
+      settings: { modelChain: ["first/model"] },
     });
-    await writeFile(path, '{"maxContextChars":200}');
+    await writeFile(path, '{"modelChain":["second/model","$current"]}');
     await expect(loadSettings(path)).resolves.toMatchObject({
       ok: true,
-      settings: { maxContextChars: 200 },
+      settings: { modelChain: ["second/model", "$current"] },
     });
   });
 });
