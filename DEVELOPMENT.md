@@ -1,9 +1,7 @@
 # pi-lazy development notes
 
 This document records the design constraints and maintenance rationale that are
-not obvious from the user-facing README. The original planning history remains
-in [`PLAN.md`](./PLAN.md); this file should travel with the extension when it is
-integrated into `7h145/pi-assorted`.
+not obvious from the user-facing README.
 
 ## Design invariants
 
@@ -193,19 +191,18 @@ When changing prompt wording, test ambiguous rough text as well as obvious typos
 Prompt tests can enforce instructions but cannot establish model behavior; retain
 manual review-before-submit as a product invariant.
 
-## pi-assorted maintenance checklist
+## Maintenance checklist
 
-When changing or releasing this extension in `7h145/pi-assorted`:
+When changing or releasing `7h145/pi-lazy`:
 
 1. Preserve the entry-point Purpose, Strategy, Author, License, Version, Date,
    and Last-verified header.
 2. Preserve MIT licensing, source attribution, and the pi-btw inspiration note.
-3. Keep the root `pi.extensions` manifest and included-extension table current.
+3. Keep the `pi.extensions` manifest and README current.
 4. Keep runtime imports represented as optional peer dependencies; do not add a
    second Pi installation to production dependencies.
 5. Run this extension's automated tests and type checking.
-6. Verify direct loading and complete-package loading without duplicate command
-   registration.
+6. Verify direct-file and package loading without duplicate command registration.
 7. Re-run successful, failed, cancelled, and configured-model TUI checks after
    model, prompt, or lifecycle changes.
 8. Update this document for compatibility or architectural decisions changed

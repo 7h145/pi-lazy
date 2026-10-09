@@ -10,6 +10,16 @@ call tools, answer the draft, or submit anything automatically.
 
 Requires Pi 0.80.4 or newer. Last verified with Pi 0.82.1.
 
+## Maintenance status
+
+New draft-correction development happens in
+[`pi-oaistt`](https://github.com/7h145/pi-oaistt), which also provides dictation
+and correction while the main agent is busy. pi-lazy remains available, but is
+no longer actively developed.
+
+Unlike pi-oaistt, pi-lazy does not replace Pi's editor. It remains an alternative
+when you need another editor extension or prefer the `/lazy` command.
+
 ## Command
 
 ```text
@@ -99,34 +109,31 @@ returned to the editor for review and never submitted automatically.
 
 ## Install / try locally
 
-Install the complete `pi-assorted` package from GitHub:
+Install this extension from GitHub:
 
 ```bash
-pi install git:github.com/7h145/pi-assorted
+pi install git:github.com/7h145/pi-lazy
 ```
 
-For a project-local install of only pi-lazy:
+This is a personal/global install. Add `-l` for a project-local install.
+Run `/reload` after installing or updating while Pi is running.
+
+If you already use pi-lazy through `pi-assorted`, disable that copy with
+`pi config` before installing the standalone package.
+
+To try a local checkout without installing, run from its root:
 
 ```bash
-git clone https://github.com/7h145/pi-assorted
-pi install ./pi-assorted/extensions/pi-lazy -l
+pi --no-extensions -e .
 ```
 
-To try this extension directly from the repository root:
+This loads only the checkout's extension, avoiding duplicate registration of
+`/lazy`.
+
+For development, install the dev dependencies and run the checks from the
+checkout's root:
 
 ```bash
-pi -e ./extensions/pi-lazy
-```
-
-If `pi-assorted` is already installed, disable its installed pi-lazy copy with
-`pi config`, or use `--no-extensions` for an isolated run, to avoid registering
-`/lazy` twice. Run `/reload` after installing or updating while Pi is running.
-
-For development, install only this extension's dev dependencies and run its
-checks:
-
-```bash
-cd extensions/pi-lazy
 npm install
 npm run check
 ```
