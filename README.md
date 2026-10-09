@@ -107,7 +107,7 @@ intent, facts, uncertainty, language, tone, named entities, terminology,
 formatting, and formality. Model output can still be wrong; the result is always
 returned to the editor for review and never submitted automatically.
 
-## Install / try locally
+## Installation
 
 Install this extension from GitHub:
 
@@ -117,9 +117,6 @@ pi install git:github.com/7h145/pi-lazy
 
 This is a personal/global install. Add `-l` for a project-local install.
 Run `/reload` after installing or updating while Pi is running.
-
-If you already use pi-lazy through `pi-assorted`, disable that copy with
-`pi config` before installing the standalone package.
 
 To try a local checkout without installing, run from its root:
 
@@ -140,6 +137,22 @@ npm run check
 
 The local development dependencies are used for tests and type checking. Pi
 provides the runtime `pi-ai` and `pi-coding-agent` packages.
+
+### Migrating from pi-assorted
+
+If you have the legacy [`pi-assorted`](https://github.com/7h145/pi-assorted)
+collection installed, turn off its pi-lazy extension before installing this
+standalone version. Otherwise Pi will try to load the same extension twice.
+
+Run `pi config` in a terminal. Under the `pi-assorted` package's Extensions
+entries, select `src/index.ts` and press Space to uncheck it
+(`[ ]`). Changes are saved immediately; press Esc to close.
+
+For a project-local collection installation, run `pi config -l` from that
+project and press Space until the entry shows `[-]` (project unload).
+
+See Pi's [resource settings reference](https://pi.dev/docs/latest/settings#resources)
+for configuration details.
 
 ## Notes
 
