@@ -1,5 +1,11 @@
 # pi-lazy
 
+> [!IMPORTANT]
+> This repository is archived and no longer maintained. New draft-correction
+> development happens in [`pi-oaistt`](https://github.com/7h145/pi-oaistt).
+> This repository retains the source and history for reference and existing
+> installations.
+
 Small Pi extension for context-aware cleanup of rough drafts before they are
 submitted to the main agent.
 
